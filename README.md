@@ -5,8 +5,8 @@ Our device is a snail that will clean and make your windows sparkling. The user 
 ## Design Prototype
 <img src="https://github.com/user-attachments/assets/7d7f679b-ea8a-41c1-920f-6bb9e49f454b" alt="snail_cardboard1" width="400" height="400">
 <img src="https://github.com/user-attachments/assets/b2454b71-92e4-4b67-be45-c360c709955e" alt="snail_cardboard2" width="400" height="400">
-First prototype made of foam, not to scale.
-
+\n First prototype made of foam, not to scale.
+\n
 <img src="https://github.com/user-attachments/assets/6d62a607-794e-4ec5-8f47-c7fab113de5a" alt="snail_clay1" width="400" height="400">
 <img src="https://github.com/user-attachments/assets/a7e3c45c-1ee2-4998-98e4-a405dfdcf8eb" alt="snail_clay2" width="400" height="400">
-Second prototype made of clay, not to scale. Would like final design to be double the current size.
+\n Second prototype made of clay, not to scale. Would like final design to be double the current size.
