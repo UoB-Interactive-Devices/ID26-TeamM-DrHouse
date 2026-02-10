@@ -1,3 +1,10 @@
 # ID26-TeamM-DrHouse
 ## Our Interactive device
 Our device is a snail that will clean and make your windows sparkling. The user charges the device. Remove the shell and fill up with water. Press the on off button at the back to start. Then simply place it on the window and it will start tracing and cleaning. The snail will have ergonomic fingerprints to encourage a correct grip. There will be a weighted hose inside the shell to spray misted water onto the window via the snail’s mouth. Once complete, the snail will beep thrice, indicating it is time to be removed.
+
+## Design Prototype
+![snail_cardboard1](https://github.com/user-attachments/assets/7d7f679b-ea8a-41c1-920f-6bb9e49f454b)
+![snail_cardboard2](https://github.com/user-attachments/assets/b2454b71-92e4-4b67-be45-c360c709955e)
+![snail_clay1](https://github.com/user-attachments/assets/6d62a607-794e-4ec5-8f47-c7fab113de5a)
+![snail_clay2](https://github.com/user-attachments/assets/a7e3c45c-1ee2-4998-98e4-a405dfdcf8eb)
+
