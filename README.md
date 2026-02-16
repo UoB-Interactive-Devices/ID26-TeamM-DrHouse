@@ -32,5 +32,5 @@ Our device is a snail that will clean and make your windows sparkling. The user 
 </table>
 
 ## Documentation
-Full report available on Overleaf:  
+Full report available on Overleaf check it out here:
 https://www.overleaf.com/read/fzhzwbgzmqft#be855f
