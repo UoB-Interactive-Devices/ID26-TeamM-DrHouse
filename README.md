@@ -4,6 +4,7 @@
 
 <p align="center">
   <img src="Group photo.jpeg" alt="Our team photo" width="700">
+  <br/>
   Our team photo
 </p>
 
