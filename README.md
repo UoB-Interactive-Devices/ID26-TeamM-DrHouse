@@ -3,7 +3,7 @@
 ## Team
 
 <p align="center">
-  <img src="assets/Group photo.jpeg" alt="Our team photo" width="700">
+  <img src="Group photo.jpeg" alt="Our team photo" width="700">
 </p>
 
 ## Our Interactive device
