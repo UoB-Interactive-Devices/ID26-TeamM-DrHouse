@@ -10,9 +10,13 @@
 
 ## Team Members
 Deeksha Subramanya
+<br/>
 Ebin Toly
+<br/>
 Hugh Kiggell
+<br/>
 Luke Trott
+<br/>
 Thushi Thulasiraj
 
 ## Our Interactive device
