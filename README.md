@@ -40,6 +40,10 @@ Our device is a snail that will clean and make your windows sparkling. The user 
   </tr>
 </table>
 
+## Questionaire
+
+https://forms.office.com/Pages/DesignPageV2.aspx?origin=NeoPortalPage&subpage=design&id=MH_ksn3NTkql2rGM8aQVG2TkWMVjhEdOipShM3-yyHlUNEFBWU1JQlY5VDE4TjFYM0VCWEhFQlVWWi4u
+
 ## Documentation
 Full report available on Overleaf check it out here:
 https://www.overleaf.com/read/fzhzwbgzmqft#be855f
