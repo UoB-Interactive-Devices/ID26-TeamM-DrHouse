@@ -20,8 +20,12 @@ Luke Trott
 Thushi Thulasiraj
 
 ## Ideation
-
+Window Cleaning Snail
 <img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/cbd10e83-0b8d-4384-9b13-f344c48ae477" /> Image created by nano banana
+
+Smart tap
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/0b5d0785-22b5-4de4-8f51-50e4cbc63b92" /> Image created by nano banana
+
 
 
 ## Our Interactive device
