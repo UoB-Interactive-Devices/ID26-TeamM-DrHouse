@@ -26,6 +26,9 @@ Window Cleaning Snail
 Smart tap
 <img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/0b5d0785-22b5-4de4-8f51-50e4cbc63b92" /> Image created by nano banana
 
+Spider wall climbing robot that dusts hard to reach areas
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/943e4f78-26e6-46e1-8d67-78a75bda851f" /> Image created by nano banana
+
 
 
 ## Our Interactive device
