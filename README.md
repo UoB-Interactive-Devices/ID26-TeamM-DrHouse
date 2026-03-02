@@ -19,6 +19,11 @@ Luke Trott
 <br/>
 Thushi Thulasiraj
 
+## Ideation
+
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/cbd10e83-0b8d-4384-9b13-f344c48ae477" /> Image created by nano banana
+
+
 ## Our Interactive device
 Our device is a snail that will clean and make your windows sparkling. The user charges the device. Remove the shell and fill up with water. Press the on off button at the back to start. Then simply place it on the window and it will start tracing and cleaning. The snail will have ergonomic fingerprints to encourage a correct grip. There will be a weighted hose inside the shell to spray misted water onto the window via the snail’s mouth. Once complete, the snail will beep thrice, indicating it is time to be removed.
 
