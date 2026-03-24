@@ -75,3 +75,7 @@ https://forms.office.com/Pages/DesignPageV2.aspx?subpage=design&FormId=MH_ksn3NT
 ## Documentation
 Full report available on Overleaf check it out here:
 [https://www.overleaf.com/read/fzhzwbgzmqft#be855f](https://www.overleaf.com/9472865782wmpkmnqygdsy#4a67b0)
+
+## Timeline
+
+https://docs.google.com/document/d/1-UH61Pvg8FrAMAUsMvd9KDbhnIRM3Y1bEEfzOIujOz8/edit?usp=sharing
