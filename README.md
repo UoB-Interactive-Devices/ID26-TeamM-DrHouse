@@ -68,6 +68,10 @@ Our device is a snail that will clean and make your windows sparkling. The user 
 https://forms.office.com/Pages/DesignPageV2.aspx?origin=NeoPortalPage&subpage=design&id=MH_ksn3NTkql2rGM8aQVG2TkWMVjhEdOipShM3-yyHlUNEFBWU1JQlY5VDE4TjFYM0VCWEhFQlVWWi4u
 https://forms.office.com/Pages/DesignPageV2.aspx?subpage=design&FormId=MH_ksn3NTkql2rGM8aQVG2TkWMVjhEdOipShM3-yyHlUNEFBWU1JQlY5VDE4TjFYM0VCWEhFQlVWWi4u&Token=62783352e0004e2ca9bb5e03ce82474e
 
+## Consent Form
+
+https://forms.office.com/Pages/DesignPageV2.aspx?subpage=design&FormId=MH_ksn3NTkql2rGM8aQVG2TkWMVjhEdOipShM3-yyHlUQ1BTV05UTFZSTUgxVDBYTlY4RkoyRUdCMC4u&Token=858f6ee1c0594260b49fc2784e468f71
+
 ## Documentation
 Full report available on Overleaf check it out here:
 [https://www.overleaf.com/read/fzhzwbgzmqft#be855f](https://www.overleaf.com/9472865782wmpkmnqygdsy#4a67b0)
