@@ -1,7 +1,17 @@
 #include "HUSKYLENS.h"
 #include "Wire.h"
+#include <WiFi.h> // --- NEW: Wi-Fi Library ---
 
 HUSKYLENS huskylens;
+
+// --- NEW: Wi-Fi Settings (THE ROBOT IS NOW THE ROUTER) ---
+const char* ap_ssid = "Tank_Robot";
+const char* ap_pass = "12345678";
+
+// When a laptop connects to an ESP32, it almost ALWAYS gets this IP:
+const char* hostIP = "192.168.4.2"; 
+const uint16_t port = 5204;
+WiFiClient client;
 
 // --- Motor Wiring ---
 int ENA = 32; int IN1 = 33; int IN2 = 25; 
@@ -38,6 +48,21 @@ const char* activeMode = "TIP";
 
 void setup() {
     Serial.begin(115200);
+    
+    // --- NEW: WI-FI SETUP (ROBOT AS ROUTER) ---
+    Serial.println("Starting Robot Hotspot...");
+    WiFi.softAP(ap_ssid, ap_pass);
+    Serial.print("Robot Hotspot Created! Robot IP is: ");
+    Serial.println(WiFi.softAPIP()); 
+    
+    Serial.println("Waiting for you to connect your laptop to 'Tank_Robot'...");
+    while (!client.connect(hostIP, port)) {
+        Serial.println("Connection failed. Retrying in 1s...");
+        delay(1000);
+    }
+    Serial.println("Connected to Laptop! Going fully wireless!");
+    // ------------------------
+
     Wire.begin(21, 22);
     Wire.setTimeOut(100);
 
@@ -55,6 +80,12 @@ void setup() {
 }
 
 void loop() {
+    // --- BULLETPROOF AUTO-RECONNECT ---
+    if (!client.connected()) {
+        client.connect(hostIP, port);
+        delay(10); 
+    }
+
     // 1. READ JOYSTICK
     int joyX = analogRead(joyXPin);
     int joyY = analogRead(joyYPin);
@@ -109,15 +140,23 @@ void loop() {
                     
                     // SCENARIO B: Tip is anywhere else (Bottom 3/4 of screen - Fix alignment!)
                     else {
-                        activeMode = "VEC"; // LOGGING: Set mode to VECTOR
+                        activeMode = "VEC"; 
                         int slant = tipX - tailX; 
-                        lastSlant = slant;  // LOGGING: Save the math
+                        lastSlant = slant;  
                         
-                        if (slant < -40) { robotState = 4; } // HARD LEFT
-                        else if (slant >= -40 && slant < -15) { robotState = 2; } // SOFT LEFT
-                        else if (slant > 15 && slant <= 40) { robotState = 3; } // SOFT RIGHT
-                        else if (slant > 40) { robotState = 5; } // HARD RIGHT
-                        else { robotState = 1; } // STRAIGHT
+                        // --- THE FIX: EMERGENCY EDGE OVERRIDES ---
+                        if (tipX > 250) { 
+                            robotState = 5; // The line is falling off the right edge! PANIC HARD RIGHT!
+                        }
+                        else if (tipX < 70) { 
+                            robotState = 4; // The line is falling off the left edge! PANIC HARD LEFT!
+                        }
+                        // --- NORMAL SLANT LOGIC ---
+                        else if (slant < -40) { robotState = 4; } // Slanting hard Left
+                        else if (slant >= -40 && slant < -15) { robotState = 2; } // Slanting slightly Left
+                        else if (slant > 15 && slant <= 40) { robotState = 3; } // Slanting slightly Right
+                        else if (slant > 40) { robotState = 5; } // Slanting hard Right
+                        else { robotState = 1; } // Line is pointing relatively straight
                     }
                 }
             }
@@ -151,6 +190,47 @@ void loop() {
                 setRightMotor(autoBaseSpeed);
                 Serial.printf("[%s] TipX: %3d | Slant: %4d | STRT   | L: %4d | R: %4d\n", activeMode, lastTipX, lastSlant, autoBaseSpeed, autoBaseSpeed);
             }
+            // --- FIXED: DEAD RECKONING ODOMETRY ---
+            if (robotState == 1) { 
+                // Straight
+                posX += cos(heading) * 1.0;  // Slowed down the forward drawing speed
+                posY += sin(heading) * 1.0; 
+            } 
+            else if (robotState == 2) { 
+                // Soft Left: Tiny virtual correction
+                heading += 0.002;            // <--- Drastically reduced from 0.05!
+                posX += cos(heading) * 0.8; 
+                posY += sin(heading) * 0.8; 
+            } 
+            else if (robotState == 3) { 
+                // Soft Right
+                heading -= 0.002; 
+                posX += cos(heading) * 0.8; 
+                posY += sin(heading) * 0.8; 
+            } 
+            else if (robotState == 4) { 
+                // Hard Left: Tank turn
+                heading += 0.0075;             // <--- Drastically reduced from 0.15!
+            } 
+            else if (robotState == 5) { 
+                // Hard Right
+                heading -= 0.0075; 
+            }
+
+            // --- ORIGINAL SERIAL DATA (Commented out for future testing) ---
+            // Serial.print("DATA:");
+            // Serial.print(posX);
+            // Serial.print(",");
+            // Serial.println(posY);
+            
+            // --- NEW: WI-FI DATA TRANSMISSION ---
+            if (client.connected()) {
+                client.print("DATA:");
+                client.print(posX);
+                client.print(",");
+                client.println(posY);
+            }
+            
             
         } else {
             stopMotors();
