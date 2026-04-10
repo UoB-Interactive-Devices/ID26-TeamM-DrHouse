@@ -4,6 +4,12 @@
 
 HUSKYLENS huskylens;
 
+// ==========================================
+// --- THE MASTER SWITCH ---
+// Set to true for Wi-Fi. Set to false for USB Cable!
+bool useWiFi = false; 
+// ==========================================
+
 // --- NEW: Wi-Fi Settings (THE ROBOT IS NOW THE ROUTER) ---
 const char* ap_ssid = "Tank_Robot";
 const char* ap_pass = "12345678";
@@ -29,8 +35,8 @@ int autoSoftInner = 85;         // Pushing the floor!
 int autoSoftOuter = 110;        // Just enough difference to steer
 
 // HARD TURNS 
-int autoHardPush = 110;         
-int autoHardRev = -130;         // We still have to keep this a bit higher. Tank-turning requires dragging rubber sideways, which takes more torque than rolling forward!
+int autoHardPush = 120;         // Push forward harder into the turn!
+int autoHardRev = -120;         // Pull backward gently just to help pivot
 
 // --- Odometry Variables ---
 float posX = 0.0, posY = 0.0, heading = 1.5708;
@@ -46,22 +52,22 @@ int lastTipX = 160;
 int lastSlant = 0;              
 const char* activeMode = "TIP"; 
 
+// --- NEW: WI-FI RECONNECT TIMER ---
+unsigned long lastWiFiTry = 0; 
+
 void setup() {
     Serial.begin(115200);
     
-    // --- NEW: WI-FI SETUP (ROBOT AS ROUTER) ---
-    Serial.println("Starting Robot Hotspot...");
-    WiFi.softAP(ap_ssid, ap_pass);
-    Serial.print("Robot Hotspot Created! Robot IP is: ");
-    Serial.println(WiFi.softAPIP()); 
-    
-    Serial.println("Waiting for you to connect your laptop to 'Tank_Robot'...");
-    while (!client.connect(hostIP, port)) {
-        Serial.println("Connection failed. Retrying in 1s...");
-        delay(1000);
+    // --- MODE SELECTION SETUP ---
+    if (useWiFi) {
+        Serial.println("Starting Robot Hotspot...");
+        WiFi.softAP(ap_ssid, ap_pass);
+        Serial.print("Robot Hotspot Created! Robot IP is: ");
+        Serial.println(WiFi.softAPIP()); 
+        Serial.println("Wi-Fi network is active in the background.");
+    } else {
+        Serial.println("Wi-Fi OFF. Using USB Serial Cable for data.");
     }
-    Serial.println("Connected to Laptop! Going fully wireless!");
-    // ------------------------
 
     Wire.begin(21, 22);
     Wire.setTimeOut(100);
@@ -80,10 +86,10 @@ void setup() {
 }
 
 void loop() {
-    // --- BULLETPROOF AUTO-RECONNECT ---
-    if (!client.connected()) {
+    // --- NON-BLOCKING AUTO-RECONNECT (ONLY IF WIFI IS ON) ---
+    if (useWiFi && !client.connected() && (millis() - lastWiFiTry > 2000)) {
         client.connect(hostIP, port);
-        delay(10); 
+        lastWiFiTry = millis(); 
     }
 
     // 1. READ JOYSTICK
@@ -125,44 +131,34 @@ void loop() {
                     lastDetectionTime = millis();
                     
                     // --- THE HYBRID LOOK-AHEAD STRATEGY ---
-                    
-                    // SCENARIO A: Tip is extremely far away (Top 1/4 of screen: Y < 60)
                     if (tipY < 60) { 
-                        activeMode = "TIP"; // LOGGING: Set mode to TIP
-                        lastSlant = 0;      // LOGGING: Clear slant for clean logs
+                        activeMode = "TIP"; 
+                        lastSlant = 0;      
                         
-                        if (tipX < 100) { robotState = 4; } // Hard Left
-                        else if (tipX >= 100 && tipX < 150) { robotState = 2; } // Soft Left
-                        else if (tipX > 170 && tipX <= 220) { robotState = 3; } // Soft Right
-                        else if (tipX > 220) { robotState = 5; } // Hard Right
-                        else { robotState = 1; } // Straight
+                        if (tipX < 100) { robotState = 4; } 
+                        else if (tipX >= 100 && tipX < 150) { robotState = 2; } 
+                        else if (tipX > 170 && tipX <= 220) { robotState = 3; } 
+                        else if (tipX > 220) { robotState = 5; } 
+                        else { robotState = 1; } 
                     } 
-                    
-                    // SCENARIO B: Tip is anywhere else (Bottom 3/4 of screen - Fix alignment!)
                     else {
                         activeMode = "VEC"; 
                         int slant = tipX - tailX; 
                         lastSlant = slant;  
                         
-                        // --- THE FIX: EMERGENCY EDGE OVERRIDES ---
-                        if (tipX > 250) { 
-                            robotState = 5; // The line is falling off the right edge! PANIC HARD RIGHT!
-                        }
-                        else if (tipX < 70) { 
-                            robotState = 4; // The line is falling off the left edge! PANIC HARD LEFT!
-                        }
-                        // --- NORMAL SLANT LOGIC ---
-                        else if (slant < -40) { robotState = 4; } // Slanting hard Left
-                        else if (slant >= -40 && slant < -15) { robotState = 2; } // Slanting slightly Left
-                        else if (slant > 15 && slant <= 40) { robotState = 3; } // Slanting slightly Right
-                        else if (slant > 40) { robotState = 5; } // Slanting hard Right
-                        else { robotState = 1; } // Line is pointing relatively straight
+                        if (tipX > 250) { robotState = 5; }
+                        else if (tipX < 70) { robotState = 4; }
+                        else if (slant < -40) { robotState = 4; } 
+                        else if (slant >= -40 && slant < -15) { robotState = 2; } 
+                        else if (slant > 15 && slant <= 40) { robotState = 3; } 
+                        else if (slant > 40) { robotState = 5; } 
+                        else { robotState = 1; } 
                     }
                 }
             }
         }
 
-        // 4. MOTOR EXECUTION (Now with enhanced logging!)
+        // 4. MOTOR EXECUTION 
         if (millis() - lastDetectionTime < MEMORY_TIMEOUT) {
             
             if (robotState == 4) { 
@@ -190,47 +186,48 @@ void loop() {
                 setRightMotor(autoBaseSpeed);
                 Serial.printf("[%s] TipX: %3d | Slant: %4d | STRT   | L: %4d | R: %4d\n", activeMode, lastTipX, lastSlant, autoBaseSpeed, autoBaseSpeed);
             }
-            // --- FIXED: DEAD RECKONING ODOMETRY ---
+            
+            // --- DEAD RECKONING ODOMETRY ---
             if (robotState == 1) { 
-                // Straight
-                posX += cos(heading) * 1.0;  // Slowed down the forward drawing speed
+                posX += cos(heading) * 1.0;  
                 posY += sin(heading) * 1.0; 
             } 
             else if (robotState == 2) { 
-                // Soft Left: Tiny virtual correction
-                heading += 0.002;            // <--- Drastically reduced from 0.05!
+                heading += 0.002;            
                 posX += cos(heading) * 0.8; 
                 posY += sin(heading) * 0.8; 
             } 
             else if (robotState == 3) { 
-                // Soft Right
                 heading -= 0.002; 
                 posX += cos(heading) * 0.8; 
                 posY += sin(heading) * 0.8; 
             } 
             else if (robotState == 4) { 
-                // Hard Left: Tank turn
-                heading += 0.0075;             // <--- Drastically reduced from 0.15!
+                heading += 0.0075;             
             } 
             else if (robotState == 5) { 
-                // Hard Right
                 heading -= 0.0075; 
             }
 
-            // --- ORIGINAL SERIAL DATA (Commented out for future testing) ---
-            // Serial.print("DATA:");
-            // Serial.print(posX);
-            // Serial.print(",");
-            // Serial.println(posY);
-            
-            // --- NEW: WI-FI DATA TRANSMISSION ---
-            if (client.connected()) {
-                client.print("DATA:");
-                client.print(posX);
-                client.print(",");
-                client.println(posY);
+            // ==========================================
+            // --- MANUAL DATA ROUTING ---
+            // ==========================================
+            if (useWiFi) {
+                // Send over Wi-Fi
+                if (client.connected()) {
+                    client.print("DATA:");
+                    client.print(posX);
+                    client.print(",");
+                    client.println(posY);
+                }
+            } else {
+                // Send over USB Cable
+                Serial.print("DATA:");
+                Serial.print(posX);
+                Serial.print(",");
+                Serial.println(posY);
             }
-            
+            // ==========================================
             
         } else {
             stopMotors();
