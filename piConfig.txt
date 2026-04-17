@@ -1,0 +1,19 @@
+[all]
+# --- VIDEO & VNC FIX ---
+# Enable the video driver so RealVNC has a screen to capture
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+
+# --- YOUR HARDWARE ---
+# Enable I2C for your HuskyLens and Camera
+dtparam=i2c_arm=on
+dtparam=i2c_arm_baudrate=400000
+enable_uart=1
+dtoverlay=imx219
+
+# --- PI 4 AUDIO FIX ---
+dtparam=audio=on
+audio_pwm_mode=2
+dtoverlay=audremap,pins_12_13
+
+
