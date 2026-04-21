@@ -20,9 +20,10 @@ from googleapiclient.http import MediaIoBaseUpload
 
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageOps, ImageEnhance
-from gpiozero import PWMOutputDevice, DigitalOutputDevice
+from gpiozero import PWMOutputDevice, DigitalOutputDevice, Button
 from huskylib import HuskyLensLibrary
 from picamera2 import Picamera2
+from gtts import gTTS
 
 def load_env_file(path):
     if not os.path.exists(path):
@@ -55,6 +56,20 @@ VISION_MODELS = [
 ]
 CAPTURE_INTERVAL_SEC = 0.5
 STRIP_SIZE = 5
+ACTION_BUTTON_PIN = int(os.environ.get("ACTION_BUTTON_PIN", "5"))
+POWER_BUTTON_PIN = int(os.environ.get("POWER_BUTTON_PIN", os.environ.get("SHUTDOWN_BUTTON_PIN", "6")))
+POWER_HOLD_SEC = float(os.environ.get("POWER_HOLD_SEC", os.environ.get("SHUTDOWN_HOLD_SEC", "5")))
+START_BEEP_ENABLED = os.environ.get("START_BEEP_ENABLED", "1") == "1"
+POWER_BUTTON_BOUNCE_SEC = float(os.environ.get("POWER_BUTTON_BOUNCE_SEC", "0.12"))
+POWER_BUTTON_CONFIRM_SEC = float(os.environ.get("POWER_BUTTON_CONFIRM_SEC", "0.05"))
+POWER_TAP_MIN_SEC = float(os.environ.get("POWER_TAP_MIN_SEC", "0.06"))
+POWER_EVENT_COOLDOWN_SEC = float(os.environ.get("POWER_EVENT_COOLDOWN_SEC", "0.30"))
+POWER_BUTTON_PULL_UP = os.environ.get("POWER_BUTTON_PULL_UP", "1") == "1"
+AUDIO_MIXER_CONTROL = os.environ.get("AUDIO_MIXER_CONTROL", "PCM")
+AUDIO_VOLUME_PERCENT = os.environ.get("AUDIO_VOLUME_PERCENT", "100%")
+BEEP_FREQ_HZ = os.environ.get("BEEP_FREQ_HZ", "880")
+BEEP_DURATION_SEC = os.environ.get("BEEP_DURATION_SEC", "0.2")
+BEEP_INTERVAL_SEC = float(os.environ.get("BEEP_INTERVAL_SEC", "0.8"))
 
 # --- GOOGLE DRIVE CONFIG ---
 GDRIVE_CREDS = "/home/roverpi/credentials.json"
@@ -70,13 +85,236 @@ def get_random_affirmation():
         print("⚠️ affirmations.txt not found! Using fallback.")
         return "I am ready"
 
+
+def play_tone_via_aplay(duration_sec, frequency_hz, wav_path, volume=None):
+    try:
+        cmd = [
+            "sox", "-n", "-r", "44100", "-b", "16", "-c", "1", wav_path,
+            "synth", str(duration_sec), "sine", str(frequency_hz)
+        ]
+        if volume is not None:
+            cmd.extend(["vol", str(volume)])
+
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+        rc = subprocess.run(
+            ["aplay", "-q", wav_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        ).returncode
+        return rc == 0
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(wav_path):
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+
 def speak(text):
     print(f"🔊 Robot says: '{text}'")
+    speech_path = "/tmp/roverpi_speech.mp3"
     try:
         subprocess.run(["pinctrl", "set", "12", "a0"], check=False)
-        subprocess.run(["espeak", "-ven+m3", "-s150", text], stderr=subprocess.DEVNULL)
+
+        # Wake up sleepy Bluetooth amps before speech playback.
+        play_tone_via_aplay("0.35", "10", "/tmp/roverpi_wakeup.wav", volume="0.5")
+
+        tts = gTTS(text=text, lang='en', tld='co.uk')
+        tts.save(speech_path)
+
+        rc = subprocess.run(
+            ["mpg123", "-q", speech_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        ).returncode
+        if rc != 0:
+            subprocess.run(
+                ["espeak", "-ven+m3", "-s150", text],
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
     except Exception as e:
         print(f"⚠️ Audio failed: {e}")
+        subprocess.run(["espeak", "-ven+m3", "-s150", text], stderr=subprocess.DEVNULL, check=False)
+    finally:
+        if os.path.exists(speech_path):
+            try:
+                os.remove(speech_path)
+            except OSError:
+                pass
+
+
+def enforce_boot_volume():
+    try:
+        subprocess.run(
+            ["amixer", "sset", AUDIO_MIXER_CONTROL, AUDIO_VOLUME_PERCENT],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+        print(f"🔊 Volume enforced: {AUDIO_MIXER_CONTROL}={AUDIO_VOLUME_PERCENT}")
+    except Exception as e:
+        print(f"⚠️ Could not set boot volume: {e}")
+
+
+def system_shutdown():
+    global global_running
+    print("🛑 Shutdown button held. Powering down...")
+    keep_beeping.clear()
+    system_awake.clear()
+    stop_run_requested.set()
+    shutdown_requested.set()
+    global_running = False
+    set_motors(0, 0)
+    speak("Goodbye, have a good day. See you tomorrow.")
+    time.sleep(1.5)
+    subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)
+
+
+def alarm_beep_thread():
+    while not shutdown_requested.is_set():
+        if keep_beeping.is_set():
+            try:
+                ok = play_tone_via_aplay(BEEP_DURATION_SEC, BEEP_FREQ_HZ, "/tmp/roverpi_beep.wav")
+                if not ok:
+                    subprocess.run(
+                        ["espeak", "-p", "80", "-s", "200", "beep"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False
+                    )
+            except Exception:
+                subprocess.run(
+                    ["espeak", "-p", "80", "-s", "200", "beep"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False
+                )
+            time.sleep(BEEP_INTERVAL_SEC)
+        else:
+            time.sleep(0.1)
+
+
+def start_beeping():
+    if not START_BEEP_ENABLED:
+        return
+    keep_beeping.set()
+
+
+def stop_beeping():
+    keep_beeping.clear()
+
+
+def toggle_awake_state():
+    global global_running
+    if system_awake.is_set():
+        print("🔌 Power button tapped: entering standby (Pi still on).")
+        system_awake.clear()
+        stop_run_requested.set()
+        stop_beeping()
+        global_running = False
+        set_motors(0, 0)
+        return
+
+    print("⚡ Power button tapped: waking system and starting beep.")
+    stop_run_requested.clear()
+    system_awake.set()
+    start_beeping()
+
+
+def power_button_monitor_loop():
+    if power_button is None:
+        return
+
+    last_power_event_at = 0.0
+    while not shutdown_requested.is_set():
+        power_button.wait_for_press()
+        if shutdown_requested.is_set():
+            break
+
+        press_start = time.monotonic()
+
+        # Confirm press stays active briefly; ignore EMI spikes/noise.
+        time.sleep(POWER_BUTTON_CONFIRM_SEC)
+        if not power_button.is_pressed:
+            continue
+
+        while power_button.is_pressed and not shutdown_requested.is_set():
+            time.sleep(0.01)
+
+        held_for = time.monotonic() - press_start
+
+        if held_for >= POWER_HOLD_SEC:
+            system_shutdown()
+            break
+
+        if held_for < POWER_TAP_MIN_SEC:
+            continue
+
+        now = time.monotonic()
+        if now - last_power_event_at < POWER_EVENT_COOLDOWN_SEC:
+            continue
+        last_power_event_at = now
+
+        toggle_awake_state()
+
+
+def setup_buttons():
+    global action_button, power_button
+    try:
+        action_button = Button(ACTION_BUTTON_PIN, bounce_time=0.05)
+        power_button = Button(
+            POWER_BUTTON_PIN,
+            pull_up=POWER_BUTTON_PULL_UP,
+            hold_time=POWER_HOLD_SEC,
+            bounce_time=POWER_BUTTON_BOUNCE_SEC
+        )
+        threading.Thread(target=power_button_monitor_loop, daemon=True).start()
+        print(
+            f"🎛️ Buttons ready: action pin={ACTION_BUTTON_PIN}, power pin={POWER_BUTTON_PIN}, "
+            f"hold={POWER_HOLD_SEC}s, bounce={POWER_BUTTON_BOUNCE_SEC}s"
+        )
+    except Exception as e:
+        action_button = None
+        power_button = None
+        print(f"⚠️ Button init failed, keyboard fallback enabled: {e}")
+
+
+def show_affirmation_context(target_text):
+    print("\n" + "*" * 50)
+    print(f"📝 Target Affirmation: {target_text}")
+    current_streak = get_current_streak_only()
+    if current_streak > 0:
+        print(f"🔥 Current Streak: {current_streak}")
+    print("*" * 50)
+
+
+def wait_for_action_press(prompt_text, stop_beep_on_press=False):
+    if action_button is not None:
+        print(prompt_text)
+        while system_awake.is_set() and not shutdown_requested.is_set():
+            if action_button.is_pressed:
+                while action_button.is_pressed and system_awake.is_set() and not shutdown_requested.is_set():
+                    time.sleep(0.03)
+                if stop_beep_on_press:
+                    stop_beeping()
+                time.sleep(0.15)
+                return True
+            time.sleep(0.05)
+        return False
+
+    input("\n👉 Press [ENTER] to continue: ")
+    if stop_beep_on_press:
+        stop_beeping()
+    return True
 
 def evaluate_affirmation(target, detected):
     print("\n⚖️ Evaluating the user's handwritten affirmation...")
@@ -85,7 +323,7 @@ def evaluate_affirmation(target, detected):
     The target phrase the user was supposed to write is: "{target}"
     The robot's camera scanned and read: "{detected}"
     
-    Are these similar enough? (Ignore minor spelling mistakes, messy handwriting errors, or missing single words).
+    Are these similar enough? (Ignore minor spelling mistakes, messy handwriting errors, missing single or few letters, or missing single words).
     Respond ONLY with the word "PASS" or "FAIL".
     """
     payload = {"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": prompt}]}
@@ -191,6 +429,45 @@ def handle_drive_upload(detected_text):
         print(f"❌ Google Drive Error: {e}")
         return None
 
+
+def get_current_streak_only():
+    SCOPES = ['https://www.googleapis.com/auth/drive.file']
+    FILE_NAME = "affirmation_log.txt"
+    token_path = '/home/roverpi/token.json'
+
+    if not os.path.exists(token_path):
+        return 0
+
+    try:
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        if not creds.valid:
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                return 0
+
+        service = build('drive', 'v3', credentials=creds)
+        results = service.files().list(
+            q=f"'{GDRIVE_FOLDER_ID}' in parents and name='{FILE_NAME}' and trashed=false",
+            fields="files(id)"
+        ).execute()
+        items = results.get('files', [])
+        if not items:
+            return 0
+
+        content = service.files().get_media(fileId=items[0]['id']).execute().decode('utf-8')
+        lines = [line for line in content.strip().split('\n') if line.strip()]
+        if not lines:
+            return 0
+
+        parts = lines[-1].split(" | ")
+        if len(parts) < 2:
+            return 0
+        return int(parts[1].replace("Streak:", "").strip())
+    except Exception as e:
+        print(f"⚠️ Could not read streak history: {e}")
+        return 0
+
 # --- Motor/State Configuration (100% ORIGINAL) ---
 ena = PWMOutputDevice(16); in1 = DigitalOutputDevice(17); in2 = DigitalOutputDevice(27)
 enb = PWMOutputDevice(26); in3 = DigitalOutputDevice(22); in4 = DigitalOutputDevice(23)
@@ -213,6 +490,12 @@ last_tip_x = 160
 global_running = True
 first_capture_done = threading.Event()
 FIRST_CAPTURE_WAIT_TIMEOUT = 5.0
+action_button = None
+power_button = None
+keep_beeping = threading.Event()
+system_awake = threading.Event()
+stop_run_requested = threading.Event()
+shutdown_requested = threading.Event()
 
 hl = HuskyLensLibrary("I2C", "", address=0x32)
 
@@ -372,11 +655,11 @@ def process_mission_results():
     strip_paths = []
 
     for idx, chunk in enumerate(strips):
-        sample = Image.open(os.path.join(save_folder, chunk[0])).transpose(Image.ROTATE_270)
+        sample = Image.open(os.path.join(save_folder, chunk[0])).transpose(Image.ROTATE_180)
         w, h = sample.size
         strip_img = Image.new('RGB', (len(chunk) * w, h))
         for i, img_file in enumerate(chunk):
-            img = Image.open(os.path.join(save_folder, img_file)).transpose(Image.ROTATE_270)
+            img = Image.open(os.path.join(save_folder, img_file)).transpose(Image.ROTATE_180)
             strip_img.paste(img, (i * w, 0))
         strip_img = ImageEnhance.Contrast(strip_img).enhance(1.8)
         strip_img = ImageEnhance.Sharpness(strip_img).enhance(2.0)
@@ -404,90 +687,160 @@ def process_mission_results():
 # --- MAIN GAME LOOP ---
 # ==============================================================
 
-current_affirmation = get_random_affirmation()
-speak(current_affirmation)
+setup_buttons()
+print("🚀 RoverPi Morning Coach Initialized.")
+enforce_boot_volume()
+threading.Thread(target=alarm_beep_thread, daemon=True).start()
+if power_button is None:
+    print("⚠️ Power button unavailable. Auto-waking system for keyboard fallback.")
+    system_awake.set()
 
-print("\n" + "*"*50)
-print(f"📝 Target Affirmation: {current_affirmation}")
-print("*"*50)
-input("\n👉 Write this on the floor, line up the robot, and press [ENTER] to start: ")
-
-print("\n🤖 RoverPi Autonomous Mode Starting...")
-cam_thread = threading.Thread(target=background_camera_loop, daemon=True)
-cam_thread.start()
-
-set_motors(0, 0)
-print("⏳ Waiting for first startup image before movement...")
-if first_capture_done.wait(timeout=FIRST_CAPTURE_WAIT_TIMEOUT):
-    print("✅ First startup image captured. Beginning movement logic.")
-else:
-    print("⚠️ First capture wait timed out. Proceeding to avoid deadlock.")
-
-run_start_time = time.time()
+print("💤 Standby mode: tap power button to wake/start beeping.")
 
 try:
-    while global_running:
-        try:
-            arrows = hl.arrows()
-        except Exception as e:
-            print(f"⚠️ HuskyLens glitch: {e}. Soft reconnecting...")
-            set_motors(0, 0)
-            time.sleep(0.5)
-            try:
-                hl = HuskyLensLibrary("I2C", "", address=0x32)
-            except:
-                pass
+    while not shutdown_requested.is_set():
+        if not system_awake.is_set():
+            time.sleep(0.1)
             continue
 
-        if arrows and len(arrows) > 0:
-            last_detection_time = time.time()
-            a = arrows[0]; tip_x, tip_y, tail_x = a.xHead, a.yHead, a.xTail
-            last_tip_x = tip_x
-            if tip_y < 60:
-                active_mode = "TIP"; last_slant = 0
-                if tip_x < 100: robot_state = 4
-                elif 100 <= tip_x < 150: robot_state = 2
-                elif 170 < tip_x <= 220: robot_state = 3
-                elif tip_x > 220: robot_state = 5
-                else: robot_state = 1
-            else:
-                active_mode = "VEC"; last_slant = tip_x - tail_x
-                if tip_x > 250: robot_state = 5
-                elif tip_x < 70: robot_state = 4
-                elif last_slant < -40: robot_state = 4
-                elif -40 <= last_slant < -15: robot_state = 2
-                elif 15 < last_slant <= 40: robot_state = 3
-                elif last_slant > 40: robot_state = 5
-                else: robot_state = 1
-        if time.time() - last_detection_time > MEMORY_TIMEOUT:
-            if robot_state != 0: print("!!! CAMERA LOST LINE !!!")
-            robot_state = 0; set_motors(0, 0)
-            if time.time() - last_detection_time > END_RUN_TIMEOUT: global_running = False; break
+        current_affirmation = get_random_affirmation()
+        current_streak = get_current_streak_only()
+        print(f"🌅 System awake. Current streak: {current_streak}")
 
-        if robot_state == 4: set_motors(autoHardRev, autoHardPush); heading += 0.0075
-        elif robot_state == 5: set_motors(autoHardPush, autoHardRev); heading -= 0.0075
-        elif robot_state == 2: set_motors(autoSoftInner, autoSoftOuter); heading += 0.002; pos_x += math.cos(heading) * 0.8; pos_y += math.sin(heading) * 0.8
-        elif robot_state == 3: set_motors(autoSoftOuter, autoSoftInner); heading -= 0.002; pos_x += math.cos(heading) * 0.8; pos_y += math.sin(heading) * 0.8
-        elif robot_state == 1: set_motors(autoBaseSpeed, autoBaseSpeed); pos_x += math.cos(heading) * 1.0; pos_y += math.sin(heading) * 1.0
-        else: set_motors(0, 0)
-        
-    set_motors(0, 0)
-    detected_text = process_mission_results()
-    
-    # 5. Judge and Upload
-    if detected_text:
-        print(f"\n👀 [DEBUG] The AI read your floor as: '{detected_text}'\n")
-        judgment = evaluate_affirmation(current_affirmation, detected_text)
-        if judgment == "PASS":
-            streak = handle_drive_upload(detected_text)
-            if streak:
-                speak(f"Great! Now you are ready to seize the day. Your current streak is {streak} days!")
+        while system_awake.is_set() and not shutdown_requested.is_set():
+            start_beeping()
+            if not wait_for_action_press("👉 Press Action Button to stop beeping and hear today's affirmation.", stop_beep_on_press=True):
+                break
+
+            show_affirmation_context(current_affirmation)
+            speak(f"Good morning. Your affirmation is: {current_affirmation}")
+
+            if not wait_for_action_press("👉 Press Action Button again to start scan and line-follow."):
+                break
+
+            stop_run_requested.clear()
+            global_running = True
+            first_capture_done = threading.Event()
+            last_detection_time = time.time()
+
+            print("\n🤖 RoverPi Autonomous Mode Starting...")
+            cam_thread = threading.Thread(target=background_camera_loop, daemon=True)
+            cam_thread.start()
+
+            set_motors(0, 0)
+            print("⏳ Waiting for first startup image before movement...")
+            if first_capture_done.wait(timeout=FIRST_CAPTURE_WAIT_TIMEOUT):
+                print("✅ First startup image captured. Beginning movement logic.")
             else:
-                speak("Great! Now you are ready to seize the day.")
-        else:
-            speak("Please write the correct affirmation")
-    else:
-        speak("I couldn't read your writing. Let's try again.")
-        
+                print("⚠️ First capture wait timed out. Proceeding to avoid deadlock.")
+
+            while global_running and system_awake.is_set() and not stop_run_requested.is_set() and not shutdown_requested.is_set():
+                try:
+                    arrows = hl.arrows()
+                except Exception as e:
+                    print(f"⚠️ HuskyLens glitch: {e}. Soft reconnecting...")
+                    set_motors(0, 0)
+                    time.sleep(0.5)
+                    try:
+                        hl = HuskyLensLibrary("I2C", "", address=0x32)
+                    except Exception:
+                        pass
+                    continue
+
+                if arrows and len(arrows) > 0:
+                    last_detection_time = time.time()
+                    a = arrows[0]
+                    tip_x, tip_y, tail_x = a.xHead, a.yHead, a.xTail
+                    last_tip_x = tip_x
+                    if tip_y < 60:
+                        active_mode = "TIP"
+                        last_slant = 0
+                        if tip_x < 100:
+                            robot_state = 4
+                        elif 100 <= tip_x < 150:
+                            robot_state = 2
+                        elif 170 < tip_x <= 220:
+                            robot_state = 3
+                        elif tip_x > 220:
+                            robot_state = 5
+                        else:
+                            robot_state = 1
+                    else:
+                        active_mode = "VEC"
+                        last_slant = tip_x - tail_x
+                        if tip_x > 250:
+                            robot_state = 5
+                        elif tip_x < 70:
+                            robot_state = 4
+                        elif last_slant < -40:
+                            robot_state = 4
+                        elif -40 <= last_slant < -15:
+                            robot_state = 2
+                        elif 15 < last_slant <= 40:
+                            robot_state = 3
+                        elif last_slant > 40:
+                            robot_state = 5
+                        else:
+                            robot_state = 1
+
+                if time.time() - last_detection_time > MEMORY_TIMEOUT:
+                    if robot_state != 0:
+                        print("!!! CAMERA LOST LINE !!!")
+                    robot_state = 0
+                    set_motors(0, 0)
+                    if time.time() - last_detection_time > END_RUN_TIMEOUT:
+                        global_running = False
+                        break
+
+                if robot_state == 4:
+                    set_motors(autoHardRev, autoHardPush)
+                    heading += 0.0075
+                elif robot_state == 5:
+                    set_motors(autoHardPush, autoHardRev)
+                    heading -= 0.0075
+                elif robot_state == 2:
+                    set_motors(autoSoftInner, autoSoftOuter)
+                    heading += 0.002
+                    pos_x += math.cos(heading) * 0.8
+                    pos_y += math.sin(heading) * 0.8
+                elif robot_state == 3:
+                    set_motors(autoSoftOuter, autoSoftInner)
+                    heading -= 0.002
+                    pos_x += math.cos(heading) * 0.8
+                    pos_y += math.sin(heading) * 0.8
+                elif robot_state == 1:
+                    set_motors(autoBaseSpeed, autoBaseSpeed)
+                    pos_x += math.cos(heading) * 1.0
+                    pos_y += math.sin(heading) * 1.0
+                else:
+                    set_motors(0, 0)
+
+            set_motors(0, 0)
+
+            if not system_awake.is_set() or stop_run_requested.is_set() or shutdown_requested.is_set():
+                continue
+
+            detected_text = process_mission_results()
+            if detected_text:
+                print(f"\n👀 [DEBUG] The AI read your floor as: '{detected_text}'\n")
+                judgment = evaluate_affirmation(current_affirmation, detected_text)
+                if judgment == "PASS":
+                    streak = handle_drive_upload(detected_text)
+                    if streak:
+                        speak(f"Excellent! Your streak is now {streak} days. See you tomorrow!")
+                    else:
+                        speak("Great! Now you are ready to seize the day.")
+                    system_awake.clear()
+                    stop_beeping()
+                    break
+
+                speak(f"That's not quite today's affirmation. Try again if you want to keep your {current_streak} day streak!")
+            else:
+                speak("I couldn't read your writing. Let's try again.")
+
 except KeyboardInterrupt:
-    global_running = False; set_motors(0, 0)
+    global_running = False
+    stop_beeping()
+    system_awake.clear()
+    shutdown_requested.set()
+    set_motors(0, 0)
