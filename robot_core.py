@@ -67,9 +67,33 @@ POWER_EVENT_COOLDOWN_SEC = float(os.environ.get("POWER_EVENT_COOLDOWN_SEC", "0.3
 POWER_BUTTON_PULL_UP = os.environ.get("POWER_BUTTON_PULL_UP", "1") == "1"
 AUDIO_MIXER_CONTROL = os.environ.get("AUDIO_MIXER_CONTROL", "PCM")
 AUDIO_VOLUME_PERCENT = os.environ.get("AUDIO_VOLUME_PERCENT", "100%")
-BEEP_FREQ_HZ = os.environ.get("BEEP_FREQ_HZ", "880")
-BEEP_DURATION_SEC = os.environ.get("BEEP_DURATION_SEC", "0.2")
+BEEP_FREQ_HZ = os.environ.get("BEEP_FREQ_HZ", "1200")
+BEEP_DURATION_SEC = os.environ.get("BEEP_DURATION_SEC", "0.18")
 BEEP_INTERVAL_SEC = float(os.environ.get("BEEP_INTERVAL_SEC", "0.8"))
+BEEP_GAIN_DB = float(os.environ.get("BEEP_GAIN_DB", "12.0"))
+BEEP_BURST_COUNT = int(os.environ.get("BEEP_BURST_COUNT", "2"))
+BEEP_BURST_GAP_SEC = float(os.environ.get("BEEP_BURST_GAP_SEC", "0.10"))
+BEEP_WAKE_DURATION_SEC = os.environ.get("BEEP_WAKE_DURATION_SEC", "0.25")
+BEEP_WAKE_VOLUME = os.environ.get("BEEP_WAKE_VOLUME", "0.5")
+BEEP_SETTLE_SEC = float(os.environ.get("BEEP_SETTLE_SEC", "0.05"))
+SPEECH_WAKE_DURATION_SEC = os.environ.get("SPEECH_WAKE_DURATION_SEC", "0.25")
+SPEECH_WAKE_VOLUME = os.environ.get("SPEECH_WAKE_VOLUME", "0.5")
+SPEAKER_SETTLE_SEC = float(os.environ.get("SPEAKER_SETTLE_SEC", "0.15"))
+RECENT_ALARM_SKIP_WAKE_WINDOW_SEC = float(os.environ.get("RECENT_ALARM_SKIP_WAKE_WINDOW_SEC", "8.0"))
+RECENT_ALARM_SETTLE_SEC = float(os.environ.get("RECENT_ALARM_SETTLE_SEC", "0.08"))
+BEEP_MP3_PATH = "/tmp/roverpi_beep.mp3"
+ALARM_SOUND_PATH = os.environ.get("ALARM_SOUND_PATH", "/home/roverpi/alarm.mp3")
+ALARM_MP3_PATH = "/tmp/roverpi_alarm.mp3"
+SYSTEM_ALARM_PATH = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+ALARM_REPEAT_COUNT = int(os.environ.get("ALARM_REPEAT_COUNT", "1"))
+ALARM_REPEAT_GAP_SEC = float(os.environ.get("ALARM_REPEAT_GAP_SEC", "0.15"))
+AFFIRMATION_TTS_CACHE_PATH = "/tmp/roverpi_affirmation_cache.mp3"
+
+alarm_proc_lock = threading.Lock()
+current_alarm_proc = None
+last_alarm_started_at = 0.0
+tts_cache_lock = threading.Lock()
+cached_tts_text = ""
 
 # --- GOOGLE DRIVE CONFIG ---
 GDRIVE_CREDS = "/home/roverpi/credentials.json"
@@ -88,6 +112,17 @@ def get_random_affirmation():
 
 def play_tone_via_aplay(duration_sec, frequency_hz, wav_path, volume=None):
     try:
+        # Keep audio mux routed to the speaker path used by the voice pipeline.
+        try:
+            subprocess.run(
+                ["pinctrl", "set", "12", "a0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
+        except FileNotFoundError:
+            pass
+
         cmd = [
             "sox", "-n", "-r", "44100", "-b", "16", "-c", "1", wav_path,
             "synth", str(duration_sec), "sine", str(frequency_hz)
@@ -101,13 +136,16 @@ def play_tone_via_aplay(duration_sec, frequency_hz, wav_path, volume=None):
             stderr=subprocess.DEVNULL,
             check=False
         )
-        rc = subprocess.run(
+        if not os.path.exists(wav_path):
+            return False
+
+        subprocess.run(
             ["aplay", "-q", wav_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False
-        ).returncode
-        return rc == 0
+        )
+        return True
     except Exception:
         return False
     finally:
@@ -117,20 +155,167 @@ def play_tone_via_aplay(duration_sec, frequency_hz, wav_path, volume=None):
             except OSError:
                 pass
 
-def speak(text):
-    print(f"🔊 Robot says: '{text}'")
-    speech_path = "/tmp/roverpi_speech.mp3"
+
+def ensure_beep_mp3():
     try:
-        subprocess.run(["pinctrl", "set", "12", "a0"], check=False)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", f"sine=frequency={BEEP_FREQ_HZ}:duration={BEEP_DURATION_SEC}",
+            "-filter:a", f"volume={BEEP_GAIN_DB}dB",
+            "-ac", "1",
+            "-ar", "44100",
+            "-q:a", "4",
+            BEEP_MP3_PATH
+        ]
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+        return os.path.exists(BEEP_MP3_PATH)
+    except Exception:
+        return False
 
-        # Wake up sleepy Bluetooth amps before speech playback.
-        play_tone_via_aplay("0.35", "10", "/tmp/roverpi_wakeup.wav", volume="0.5")
 
-        tts = gTTS(text=text, lang='en', tld='co.uk')
-        tts.save(speech_path)
+def ensure_alarm_mp3():
+    try:
+        if os.path.exists(ALARM_MP3_PATH):
+            return True
+
+        source_path = None
+
+        if os.path.exists(ALARM_SOUND_PATH):
+            source_path = ALARM_SOUND_PATH
+
+        if source_path is None and os.path.exists(SYSTEM_ALARM_PATH):
+            source_path = SYSTEM_ALARM_PATH
+
+        if source_path is None:
+            return False
 
         rc = subprocess.run(
-            ["mpg123", "-q", speech_path],
+            [
+                "ffmpeg", "-y",
+                "-i", source_path,
+                "-ac", "1",
+                "-ar", "44100",
+                "-q:a", "4",
+                ALARM_MP3_PATH
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        ).returncode
+        return rc == 0 and os.path.exists(ALARM_MP3_PATH)
+    except Exception:
+        return False
+
+
+def ensure_cached_tts(text):
+    global cached_tts_text
+    with tts_cache_lock:
+        if cached_tts_text == text and os.path.exists(AFFIRMATION_TTS_CACHE_PATH):
+            return True
+    try:
+        tts = gTTS(text=text, lang='en', tld='co.uk')
+        tts.save(AFFIRMATION_TTS_CACHE_PATH)
+        with tts_cache_lock:
+            cached_tts_text = text
+        return True
+    except Exception:
+        return False
+
+
+def prefetch_affirmation_tts_async(text):
+    threading.Thread(target=ensure_cached_tts, args=(text,), daemon=True).start()
+
+
+def play_alarm_via_mpg123():
+    global current_alarm_proc, last_alarm_started_at
+    try:
+        if not ensure_alarm_mp3():
+            return False
+
+        proc = subprocess.Popen(
+            ["mpg123", "-q", ALARM_MP3_PATH],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        with alarm_proc_lock:
+            current_alarm_proc = proc
+            last_alarm_started_at = time.monotonic()
+
+        while proc.poll() is None:
+            if not keep_beeping.is_set() or shutdown_requested.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=0.25)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return True
+            time.sleep(0.02)
+
+        return proc.returncode == 0
+    except Exception:
+        return False
+    finally:
+        with alarm_proc_lock:
+            current_alarm_proc = None
+
+
+def play_beep_via_mpg123():
+    try:
+        if not ensure_beep_mp3():
+            return False
+        rc = subprocess.run(
+            ["mpg123", "-q", BEEP_MP3_PATH],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        ).returncode
+        return rc == 0
+    except Exception:
+        return False
+
+def speak(text):
+    global last_alarm_started_at
+    print(f"🔊 Robot says: '{text}'")
+    speech_path = "/tmp/roverpi_speech.mp3"
+    playback_path = speech_path
+    used_temp_speech = False
+    try:
+        try:
+            subprocess.run(
+                ["pinctrl", "set", "12", "a0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
+        except FileNotFoundError:
+            pass
+
+        # If alarm just played, speaker is already awake: skip long wake tone.
+        recently_active = (time.monotonic() - last_alarm_started_at) <= RECENT_ALARM_SKIP_WAKE_WINDOW_SEC
+        if recently_active:
+            time.sleep(RECENT_ALARM_SETTLE_SEC)
+        else:
+            play_tone_via_aplay(SPEECH_WAKE_DURATION_SEC, "10", "/tmp/roverpi_wakeup.wav", volume=SPEECH_WAKE_VOLUME)
+            time.sleep(SPEAKER_SETTLE_SEC)
+
+        with tts_cache_lock:
+            has_cached = cached_tts_text == text and os.path.exists(AFFIRMATION_TTS_CACHE_PATH)
+
+        if has_cached:
+            playback_path = AFFIRMATION_TTS_CACHE_PATH
+        else:
+            tts = gTTS(text=text, lang='en', tld='co.uk')
+            tts.save(speech_path)
+            used_temp_speech = True
+
+        rc = subprocess.run(
+            ["mpg123", "-q", playback_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False
@@ -145,7 +330,7 @@ def speak(text):
         print(f"⚠️ Audio failed: {e}")
         subprocess.run(["espeak", "-ven+m3", "-s150", text], stderr=subprocess.DEVNULL, check=False)
     finally:
-        if os.path.exists(speech_path):
+        if used_temp_speech and os.path.exists(speech_path):
             try:
                 os.remove(speech_path)
             except OSError:
@@ -183,21 +368,17 @@ def alarm_beep_thread():
     while not shutdown_requested.is_set():
         if keep_beeping.is_set():
             try:
-                ok = play_tone_via_aplay(BEEP_DURATION_SEC, BEEP_FREQ_HZ, "/tmp/roverpi_beep.wav")
-                if not ok:
-                    subprocess.run(
-                        ["espeak", "-p", "80", "-s", "200", "beep"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False
-                    )
+                repeat_count = max(1, ALARM_REPEAT_COUNT)
+                for alarm_idx in range(repeat_count):
+                    ok = play_alarm_via_mpg123()
+                    if not ok:
+                        ok = play_beep_via_mpg123()
+                    if not ok:
+                        play_tone_via_aplay(BEEP_DURATION_SEC, BEEP_FREQ_HZ, "/tmp/roverpi_beep.wav")
+                    if alarm_idx < repeat_count - 1:
+                        time.sleep(ALARM_REPEAT_GAP_SEC)
             except Exception:
-                subprocess.run(
-                    ["espeak", "-p", "80", "-s", "200", "beep"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False
-                )
+                pass
             time.sleep(BEEP_INTERVAL_SEC)
         else:
             time.sleep(0.1)
@@ -205,23 +386,47 @@ def alarm_beep_thread():
 
 def start_beeping():
     if not START_BEEP_ENABLED:
+        print("⚠️ Beeping disabled by START_BEEP_ENABLED=0")
         return
+    # Wake sleepy Bluetooth speakers before the repeating beep starts.
+    if not keep_beeping.is_set():
+        play_tone_via_aplay(
+            BEEP_WAKE_DURATION_SEC,
+            "10",
+            "/tmp/roverpi_beep_wakeup.wav",
+            volume=BEEP_WAKE_VOLUME
+        )
+        time.sleep(BEEP_SETTLE_SEC)
+        if not ensure_alarm_mp3():
+            ensure_beep_mp3()
     keep_beeping.set()
 
 
 def stop_beeping():
     keep_beeping.clear()
+    with alarm_proc_lock:
+        proc = current_alarm_proc
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=0.25)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def toggle_awake_state():
     global global_running
     if system_awake.is_set():
-        print("🔌 Power button tapped: entering standby (Pi still on).")
-        system_awake.clear()
-        stop_run_requested.set()
-        stop_beeping()
-        global_running = False
-        set_motors(0, 0)
+        if not mission_completed and current_affirmation_global:
+            print("🔁 Power button tapped: replaying today's affirmation.")
+            stop_beeping()
+            speak(f"Good morning. Your affirmation is: {current_affirmation_global}")
+            return
+
+        print("🔌 Power button tapped, but the mission is already complete. Ignoring replay.")
         return
 
     print("⚡ Power button tapped: waking system and starting beep.")
@@ -468,11 +673,16 @@ def get_current_streak_only():
         print(f"⚠️ Could not read streak history: {e}")
         return 0
 
+
+def format_streak_unit(streak_value):
+    return "day" if int(streak_value) == 1 else "days"
+
 # --- Motor/State Configuration (100% ORIGINAL) ---
 ena = PWMOutputDevice(16); in1 = DigitalOutputDevice(17); in2 = DigitalOutputDevice(27)
 enb = PWMOutputDevice(26); in3 = DigitalOutputDevice(22); in4 = DigitalOutputDevice(23)
 
-speedMultiplier = 0.8
+speedMultiplier = 0.8 # for 8v
+speedMultiplier = 1.07 # for 6v
 autoBaseSpeed = 0.25 * speedMultiplier
 autoSoftInner = 0.25 * speedMultiplier
 autoSoftOuter = 0.3 * speedMultiplier
@@ -496,6 +706,9 @@ keep_beeping = threading.Event()
 system_awake = threading.Event()
 stop_run_requested = threading.Event()
 shutdown_requested = threading.Event()
+
+mission_completed = False
+current_affirmation_global = ""
 
 hl = HuskyLensLibrary("I2C", "", address=0x32)
 
@@ -655,11 +868,11 @@ def process_mission_results():
     strip_paths = []
 
     for idx, chunk in enumerate(strips):
-        sample = Image.open(os.path.join(save_folder, chunk[0])).transpose(Image.ROTATE_180)
+        sample = Image.open(os.path.join(save_folder, chunk[0])).transpose(Image.ROTATE_90)
         w, h = sample.size
         strip_img = Image.new('RGB', (len(chunk) * w, h))
         for i, img_file in enumerate(chunk):
-            img = Image.open(os.path.join(save_folder, img_file)).transpose(Image.ROTATE_180)
+            img = Image.open(os.path.join(save_folder, img_file)).transpose(Image.ROTATE_90)
             strip_img.paste(img, (i * w, 0))
         strip_img = ImageEnhance.Contrast(strip_img).enhance(1.8)
         strip_img = ImageEnhance.Sharpness(strip_img).enhance(2.0)
@@ -691,11 +904,16 @@ setup_buttons()
 print("🚀 RoverPi Morning Coach Initialized.")
 enforce_boot_volume()
 threading.Thread(target=alarm_beep_thread, daemon=True).start()
+
+current_affirmation_global = get_random_affirmation()
+prefetch_affirmation_tts_async(f"Good morning. Your affirmation is: {current_affirmation_global}")
+system_awake.set()
+start_beeping()
+
 if power_button is None:
     print("⚠️ Power button unavailable. Auto-waking system for keyboard fallback.")
-    system_awake.set()
 
-print("💤 Standby mode: tap power button to wake/start beeping.")
+print("💤 Standby mode: tap power button to replay affirmation, or hold to power off.")
 
 try:
     while not shutdown_requested.is_set():
@@ -703,8 +921,12 @@ try:
             time.sleep(0.1)
             continue
 
-        current_affirmation = get_random_affirmation()
+        if not current_affirmation_global:
+            current_affirmation_global = get_random_affirmation()
+        current_affirmation = current_affirmation_global
+        current_affirmation_global = current_affirmation
         current_streak = get_current_streak_only()
+        prefetch_affirmation_tts_async(f"Good morning. Your affirmation is: {current_affirmation}")
         print(f"🌅 System awake. Current streak: {current_streak}")
 
         while system_awake.is_set() and not shutdown_requested.is_set():
@@ -825,9 +1047,10 @@ try:
                 print(f"\n👀 [DEBUG] The AI read your floor as: '{detected_text}'\n")
                 judgment = evaluate_affirmation(current_affirmation, detected_text)
                 if judgment == "PASS":
+                    mission_completed = True
                     streak = handle_drive_upload(detected_text)
                     if streak:
-                        speak(f"Excellent! Your streak is now {streak} days. See you tomorrow!")
+                        speak(f"Excellent! Your streak is now {streak} {format_streak_unit(streak)}. See you tomorrow!")
                     else:
                         speak("Great! Now you are ready to seize the day.")
                     system_awake.clear()
