@@ -1,3 +1,6 @@
+# -------------- IMPORTS --------------
+# Standard and third-party library imports for robot operation.
+# -------------------------------------
 import time
 import math
 import os
@@ -10,14 +13,18 @@ import random
 import datetime
 import io
 
-# --- NEW: GOOGLE DRIVE IMPORTS ---
-# --- GOOGLE DRIVE OAUTH IMPORTS ---
+# -------------- GOOGLE DRIVE IMPORTS --------------
+# Imports for Google Drive API and OAuth authentication.
+# ---------------------------------------------------
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+# -------------- HARDWARE & IMAGE LIBRARIES --------------
+# Libraries for image processing, GPIO, camera, and TTS.
+# --------------------------------------------------------
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image, ImageOps, ImageEnhance
 from gpiozero import PWMOutputDevice, DigitalOutputDevice, Button
@@ -25,6 +32,10 @@ from huskylib import HuskyLensLibrary
 from picamera2 import Picamera2
 from gtts import gTTS
 
+
+# -------------- ENVIRONMENT LOADING --------------
+# Loads environment variables from a .env file if present.
+# --------------------------------------------------
 def load_env_file(path):
     if not os.path.exists(path):
         return
@@ -40,12 +51,14 @@ def load_env_file(path):
                 if key and key not in os.environ:
                     os.environ[key] = value
     except Exception as e:
-        print(f"⚠️ Could not load .env file ({path}): {e}")
+        print(f"Warning: Could not load .env file ({path}): {e}")
 
 load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-# ==========================================
-# --- YOUR KEYS & CONFIG ---
+
+# -------------- CONFIGURATION --------------
+# Key settings and configuration for robot operation.
+# --------------------------------------------
 API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 VISION_MODELS = [
     os.environ.get("OPENROUTER_VISION_MODEL", "qwen/qwen3-vl-32b-instruct"),
@@ -67,21 +80,26 @@ POWER_EVENT_COOLDOWN_SEC = float(os.environ.get("POWER_EVENT_COOLDOWN_SEC", "0.3
 POWER_BUTTON_PULL_UP = os.environ.get("POWER_BUTTON_PULL_UP", "1") == "1"
 AUDIO_MIXER_CONTROL = os.environ.get("AUDIO_MIXER_CONTROL", "PCM")
 AUDIO_VOLUME_PERCENT = os.environ.get("AUDIO_VOLUME_PERCENT", "100%")
-BEEP_FREQ_HZ = os.environ.get("BEEP_FREQ_HZ", "1200")
-BEEP_DURATION_SEC = os.environ.get("BEEP_DURATION_SEC", "0.18")
+BEEP_WAKE_DURATION_SEC = float(os.environ.get("BEEP_WAKE_DURATION_SEC", "0.25"))
+BEEP_WAKE_VOLUME = float(os.environ.get("BEEP_WAKE_VOLUME", "0.5"))
+BEEP_SETTLE_SEC = float(os.environ.get("BEEP_SETTLE_SEC", "0.05"))
 BEEP_INTERVAL_SEC = float(os.environ.get("BEEP_INTERVAL_SEC", "0.8"))
+
+alarm_proc_lock = threading.Lock()
+current_alarm_proc = None
+last_alarm_started_at = 0.0
+tts_cache_lock = threading.Lock()
+cached_tts_text = ""
+BEEP_FREQ_HZ = float(os.environ.get("BEEP_FREQ_HZ", "1200"))
+BEEP_DURATION_SEC = float(os.environ.get("BEEP_DURATION_SEC", "0.18"))
 BEEP_GAIN_DB = float(os.environ.get("BEEP_GAIN_DB", "12.0"))
 BEEP_BURST_COUNT = int(os.environ.get("BEEP_BURST_COUNT", "2"))
 BEEP_BURST_GAP_SEC = float(os.environ.get("BEEP_BURST_GAP_SEC", "0.10"))
-BEEP_WAKE_DURATION_SEC = os.environ.get("BEEP_WAKE_DURATION_SEC", "0.25")
-BEEP_WAKE_VOLUME = os.environ.get("BEEP_WAKE_VOLUME", "0.5")
-BEEP_SETTLE_SEC = float(os.environ.get("BEEP_SETTLE_SEC", "0.05"))
-SPEECH_WAKE_DURATION_SEC = os.environ.get("SPEECH_WAKE_DURATION_SEC", "0.25")
-SPEECH_WAKE_VOLUME = os.environ.get("SPEECH_WAKE_VOLUME", "0.5")
+SPEECH_WAKE_DURATION_SEC = float(os.environ.get("SPEECH_WAKE_DURATION_SEC", "0.25"))
+SPEECH_WAKE_VOLUME = float(os.environ.get("SPEECH_WAKE_VOLUME", "0.5"))
 SPEAKER_SETTLE_SEC = float(os.environ.get("SPEAKER_SETTLE_SEC", "0.15"))
 RECENT_ALARM_SKIP_WAKE_WINDOW_SEC = float(os.environ.get("RECENT_ALARM_SKIP_WAKE_WINDOW_SEC", "8.0"))
 RECENT_ALARM_SETTLE_SEC = float(os.environ.get("RECENT_ALARM_SETTLE_SEC", "0.08"))
-BEEP_MP3_PATH = "/tmp/roverpi_beep.mp3"
 ALARM_SOUND_PATH = os.environ.get("ALARM_SOUND_PATH", "/home/roverpi/alarm.mp3")
 ALARM_MP3_PATH = "/tmp/roverpi_alarm.mp3"
 SYSTEM_ALARM_PATH = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
@@ -89,16 +107,12 @@ ALARM_REPEAT_COUNT = int(os.environ.get("ALARM_REPEAT_COUNT", "1"))
 ALARM_REPEAT_GAP_SEC = float(os.environ.get("ALARM_REPEAT_GAP_SEC", "0.15"))
 AFFIRMATION_TTS_CACHE_PATH = "/tmp/roverpi_affirmation_cache.mp3"
 
-alarm_proc_lock = threading.Lock()
-current_alarm_proc = None
-last_alarm_started_at = 0.0
-tts_cache_lock = threading.Lock()
-cached_tts_text = ""
 
-# --- GOOGLE DRIVE CONFIG ---
+# -------------- GOOGLE DRIVE CONFIG --------------
+# File paths and folder ID for Google Drive integration.
+# --------------------------------------------------
 GDRIVE_CREDS = "/home/roverpi/credentials.json"
 GDRIVE_FOLDER_ID = "1xbg2vaMZ2UPwY5aEKG-ZxQxcfJb1JHYC"
-# ==========================================
 
 def get_random_affirmation():
     try:
@@ -106,7 +120,7 @@ def get_random_affirmation():
             lines = [line.strip() for line in f if line.strip()]
         return random.choice(lines) if lines else "I am ready"
     except FileNotFoundError:
-        print("⚠️ affirmations.txt not found! Using fallback.")
+        print("Warning: affirmations.txt not found! Using fallback.")
         return "I am ready"
 
 
@@ -281,7 +295,7 @@ def play_beep_via_mpg123():
 
 def speak(text):
     global last_alarm_started_at
-    print(f"🔊 Robot says: '{text}'")
+    print(f"Robot says: '{text}'")
     speech_path = "/tmp/roverpi_speech.mp3"
     playback_path = speech_path
     used_temp_speech = False
@@ -327,7 +341,7 @@ def speak(text):
                 check=False
             )
     except Exception as e:
-        print(f"⚠️ Audio failed: {e}")
+        print(f"Warning: Audio failed: {e}")
         subprocess.run(["espeak", "-ven+m3", "-s150", text], stderr=subprocess.DEVNULL, check=False)
     finally:
         if used_temp_speech and os.path.exists(speech_path):
@@ -345,14 +359,14 @@ def enforce_boot_volume():
             stderr=subprocess.DEVNULL,
             check=False
         )
-        print(f"🔊 Volume enforced: {AUDIO_MIXER_CONTROL}={AUDIO_VOLUME_PERCENT}")
+        print(f"Volume enforced: {AUDIO_MIXER_CONTROL}={AUDIO_VOLUME_PERCENT}")
     except Exception as e:
-        print(f"⚠️ Could not set boot volume: {e}")
+        print(f"Warning: Could not set boot volume: {e}")
 
 
 def system_shutdown():
     global global_running
-    print("🛑 Shutdown button held. Powering down...")
+    print("Shutdown button held. Powering down...")
     keep_beeping.clear()
     system_awake.clear()
     stop_run_requested.set()
@@ -364,6 +378,10 @@ def system_shutdown():
     subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)
 
 
+
+# -------------- BEEPING & ALARM LOGIC --------------
+# Handles alarm and beeping sounds for user feedback.
+# ---------------------------------------------------
 def alarm_beep_thread():
     while not shutdown_requested.is_set():
         if keep_beeping.is_set():
@@ -386,9 +404,9 @@ def alarm_beep_thread():
 
 def start_beeping():
     if not START_BEEP_ENABLED:
-        print("⚠️ Beeping disabled by START_BEEP_ENABLED=0")
+        print("Beeping disabled by START_BEEP_ENABLED=0")
         return
-    # Wake sleepy Bluetooth speakers before the repeating beep starts.
+    # Wake up Bluetooth speakers before the repeating beep starts.
     if not keep_beeping.is_set():
         play_tone_via_aplay(
             BEEP_WAKE_DURATION_SEC,
@@ -418,18 +436,23 @@ def stop_beeping():
 
 
 def toggle_awake_state():
-    global global_running
+    global global_running, affirmation_heard, autonomous_active
+    # Ignore power button only during actual autonomous run
+    if system_awake.is_set() and autonomous_active:
+        print("Power button ignored during autonomous run.")
+        return
     if system_awake.is_set():
         if not mission_completed and current_affirmation_global:
-            print("🔁 Power button tapped: replaying today's affirmation.")
+            print("Power button tapped: replaying today's affirmation.")
             stop_beeping()
             speak(f"Good morning. Your affirmation is: {current_affirmation_global}")
+            affirmation_heard = True
             return
 
-        print("🔌 Power button tapped, but the mission is already complete. Ignoring replay.")
+        print("Power button tapped, but the mission is already complete. Ignoring replay.")
         return
 
-    print("⚡ Power button tapped: waking system and starting beep.")
+    print("Power button tapped: waking system and starting beep.")
     stop_run_requested.clear()
     system_awake.set()
     start_beeping()
@@ -484,13 +507,13 @@ def setup_buttons():
         )
         threading.Thread(target=power_button_monitor_loop, daemon=True).start()
         print(
-            f"🎛️ Buttons ready: action pin={ACTION_BUTTON_PIN}, power pin={POWER_BUTTON_PIN}, "
+            f"Buttons ready: action pin={ACTION_BUTTON_PIN}, power pin={POWER_BUTTON_PIN}, "
             f"hold={POWER_HOLD_SEC}s, bounce={POWER_BUTTON_BOUNCE_SEC}s"
         )
     except Exception as e:
         action_button = None
         power_button = None
-        print(f"⚠️ Button init failed, keyboard fallback enabled: {e}")
+        print(f"Warning: Button init failed, keyboard fallback enabled: {e}")
 
 
 def show_affirmation_context(target_text):
@@ -516,13 +539,13 @@ def wait_for_action_press(prompt_text, stop_beep_on_press=False):
             time.sleep(0.05)
         return False
 
-    input("\n👉 Press [ENTER] to continue: ")
+    input("\nPress [ENTER] to continue: ")
     if stop_beep_on_press:
         stop_beeping()
     return True
 
 def evaluate_affirmation(target, detected):
-    print("\n⚖️ Evaluating the user's handwritten affirmation...")
+    print("\nEvaluating the user's handwritten affirmation...")
     prompt = f"""
     You are a lenient judge grading a handwritten affirmation.
     The target phrase the user was supposed to write is: "{target}"
@@ -545,10 +568,10 @@ def handle_drive_upload(detected_text):
     creds = None
 
     if not os.path.exists(CLIENT_SECRET_FILE) or GDRIVE_FOLDER_ID == "PASTE_YOUR_FOLDER_ID_HERE":
-        print("⚠️ Google Drive OAuth not configured. Skipping upload.")
+        print("Warning: Google Drive OAuth not configured. Skipping upload.")
         return None
 
-    print("\n☁️ Connecting to Google Drive as YOU...")
+    print("\nConnecting to Google Drive as YOU...")
     
     # 1. Login Logic
     if os.path.exists('/home/roverpi/token.json'):
@@ -604,7 +627,7 @@ def handle_drive_upload(detected_text):
                     elif last_date == today:
                         streak = last_streak # Keep the streak the same if done twice today
                 except Exception as e:
-                    print(f"⚠️ Could not parse previous streak from log: {e}")
+                    print(f"Warning: Could not parse previous streak from log: {e}")
 
         # Format the new entry
         # Example: "2026-04-17 | Streak: 4 | Message: I am capable of amazing things."
@@ -621,17 +644,17 @@ def handle_drive_upload(detected_text):
         if file_id:
             # Overwrite the existing file with the appended version
             service.files().update(fileId=file_id, media_body=media).execute()
-            print(f"✅ Appended new line to: {FILE_NAME}")
+            print(f"Appended new line to: {FILE_NAME}")
         else:
             # First time ever running it: Create the file
             file_metadata = {'name': FILE_NAME, 'parents': [GDRIVE_FOLDER_ID]}
             service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-            print(f"✅ Created new Drive log: {FILE_NAME}")
+            print(f"Created new Drive log: {FILE_NAME}")
 
         return streak
 
     except Exception as e:
-        print(f"❌ Google Drive Error: {e}")
+        print(f"Google Drive Error: {e}")
         return None
 
 
@@ -670,24 +693,32 @@ def get_current_streak_only():
             return 0
         return int(parts[1].replace("Streak:", "").strip())
     except Exception as e:
-        print(f"⚠️ Could not read streak history: {e}")
+        print(f"Warning: Could not read streak history: {e}")
         return 0
 
 
 def format_streak_unit(streak_value):
     return "day" if int(streak_value) == 1 else "days"
 
-# --- Motor/State Configuration (100% ORIGINAL) ---
-ena = PWMOutputDevice(16); in1 = DigitalOutputDevice(17); in2 = DigitalOutputDevice(27)
-enb = PWMOutputDevice(26); in3 = DigitalOutputDevice(22); in4 = DigitalOutputDevice(23)
+affirmation_heard = False
 
-speedMultiplier = 0.8 # for 8v
-speedMultiplier = 1.07 # for 6v
-autoBaseSpeed = 0.25 * speedMultiplier
-autoSoftInner = 0.25 * speedMultiplier
-autoSoftOuter = 0.3 * speedMultiplier
-autoHardPush  = 0.35 * speedMultiplier
-autoHardRev   = -0.35 * speedMultiplier
+# -------------- DRIVING CONTROLS --------------
+# Motor and state configuration for robot movement and navigation.
+# ----------------------------------------------
+ena = PWMOutputDevice(16)
+in1 = DigitalOutputDevice(17)
+in2 = DigitalOutputDevice(27)
+enb = PWMOutputDevice(26)
+in3 = DigitalOutputDevice(22)
+in4 = DigitalOutputDevice(23)
+
+speed_multiplier = 0.8  # for 8V
+speed_multiplier = 1.07  # for 6V
+auto_base_speed = 0.25 * speed_multiplier
+auto_soft_inner = 0.25 * speed_multiplier
+auto_soft_outer = 0.3 * speed_multiplier
+auto_hard_push = 0.35 * speed_multiplier
+auto_hard_rev = -0.35 * speed_multiplier
 
 pos_x, pos_y, heading = 0.0, 0.0, 1.5708
 last_detection_time = 0
@@ -707,8 +738,11 @@ system_awake = threading.Event()
 stop_run_requested = threading.Event()
 shutdown_requested = threading.Event()
 
+affirmation_heard = False
 mission_completed = False
 current_affirmation_global = ""
+affirmation_heard = False
+autonomous_active = False
 
 hl = HuskyLensLibrary("I2C", "", address=0x32)
 
@@ -744,7 +778,7 @@ def background_camera_loop():
         picam2.configure(picam2.create_still_configuration(main={"size": (800, 600)}))
         picam2.start()
         
-        print("📸 SNAP! Immediate Start-Photo Taken (Capture 0000).")
+        print("SNAP! Immediate Start-Photo Taken (Capture 0000).")
         img_count = 0
         
         picam2.capture_file(f"{save_folder}/capture_{img_count:04d}.jpg")
@@ -759,7 +793,7 @@ def background_camera_loop():
         picam2.stop(); picam2.close()
     except Exception as e:
         first_capture_done.set()
-        print(f"❌ Camera Error: {e}")
+        print(f"Camera Error: {e}")
 
 def openrouter_chat_completion(payload, request_tag):
     if not API_KEY: return None, "missing_api_key"
@@ -809,7 +843,10 @@ def openrouter_chat_completion(payload, request_tag):
         return None, "empty_message"
     return message, None
 
-# --- VISION CALL ---
+
+# -------------- OCR LOGIC --------------
+# Sends images to OCR model for literal text extraction.
+# ----------------------------------------
 def vision_call_multi(image_paths):
     try:
         content = [{
@@ -842,24 +879,27 @@ def vision_call_multi(image_paths):
             }
             text, err = openrouter_chat_completion(payload, request_tag=f"multi:{model_name}")
             if not err:
-                print(f"🔎 Multi-strip result ({model_name}): {text}")
+                print(f"Multi-strip result ({model_name}): {text}")
                 return text
             last_err = err
-            print(f"⚠️ Model failed for multi-strip request ({model_name}): {err}")
+            print(f"Model failed for multi-strip request ({model_name}): {err}")
 
-        print(f"❌ OpenRouter multi-strip error: {last_err}")
+        print(f"OpenRouter multi-strip error: {last_err}")
         return f"ERROR::{last_err}"
     except Exception as e:
         err = f"image_read_error:{e}"
-        print(f"❌ OpenRouter multi-strip error: {err}")
+        print(f"OpenRouter multi-strip error: {err}")
         return f"ERROR::{err}"
 
-# --- RESULTS PROCESSING ---
+
+# -------------- RESULTS PROCESSING --------------
+# Processes captured images, runs OCR, and returns detected text.
+# -----------------------------------------------
 def process_mission_results():
     save_folder = "/home/roverpi/images"
     images = sorted([img for img in os.listdir(save_folder) if img.startswith("capture_")])
     if not images:
-        print("\n❌ MISSION FAILED: No images captured.")
+        print("\nMISSION FAILED: No images captured.")
         return None
 
     if len(images) > 4: images = images[:-4]
@@ -879,29 +919,30 @@ def process_mission_results():
         path = os.path.join(save_folder, f"strip_{idx}.jpg")
         strip_img.save(path); strip_paths.append(path)
 
-    print(f"\n🚀 Beaming {len(strip_paths)} strips in ONE vision request...")
+    print(f"\nBeaming {len(strip_paths)} strips in one vision request...")
     final = vision_call_multi(strip_paths)
 
     if not isinstance(final, str) or not final:
-        print("\n🤖 MISSION REPORT: Vision returned no output.")
+        print("\nMISSION REPORT: Vision returned no output.")
         return None
     if final.startswith("ERROR::"):
-        print("\n🤖 MISSION REPORT: Vision request failed.")
+        print("\nMISSION REPORT: Vision request failed.")
         return None
     if final.strip().upper() == "NULL":
-        print("\n🤖 MISSION REPORT: AI found no readable text.")
+        print("\nMISSION REPORT: No readable text found.")
         return None
 
-    print("\n" + "="*40 + f"\n🤖 FINAL MESSAGE: {final}\n" + "="*40 + "\n")
+    print("\n" + "="*40 + f"\nFINAL MESSAGE: {final}\n" + "="*40 + "\n")
     return final
 
 
-# ==============================================================
-# --- MAIN GAME LOOP ---
-# ==============================================================
+
+# -------------- MAIN GAME LOOP --------------
+# Main control loop for robot operation and user interaction.
+# ---------------------------------------------
 
 setup_buttons()
-print("🚀 RoverPi Morning Coach Initialized.")
+print("RoverPi Morning Coach Initialised.")
 enforce_boot_volume()
 threading.Thread(target=alarm_beep_thread, daemon=True).start()
 
@@ -911,9 +952,10 @@ system_awake.set()
 start_beeping()
 
 if power_button is None:
-    print("⚠️ Power button unavailable. Auto-waking system for keyboard fallback.")
+    print("Warning: Power button unavailable. Auto-waking system for keyboard fallback.")
+    affirmation_heard = True
 
-print("💤 Standby mode: tap power button to replay affirmation, or hold to power off.")
+print("Standby mode: tap power button to hear/replay affirmation, then press action to start. Hold power to power off.")
 
 try:
     while not shutdown_requested.is_set():
@@ -923,44 +965,44 @@ try:
 
         if not current_affirmation_global:
             current_affirmation_global = get_random_affirmation()
+            affirmation_heard = False
         current_affirmation = current_affirmation_global
         current_affirmation_global = current_affirmation
         current_streak = get_current_streak_only()
         prefetch_affirmation_tts_async(f"Good morning. Your affirmation is: {current_affirmation}")
-        print(f"🌅 System awake. Current streak: {current_streak}")
+        print(f"System awake. Current streak: {current_streak}")
 
         while system_awake.is_set() and not shutdown_requested.is_set():
-            start_beeping()
-            if not wait_for_action_press("👉 Press Action Button to stop beeping and hear today's affirmation.", stop_beep_on_press=True):
+            if not wait_for_action_press("Press Action Button to start scan and line-follow.", stop_beep_on_press=True):
                 break
 
-            show_affirmation_context(current_affirmation)
-            speak(f"Good morning. Your affirmation is: {current_affirmation}")
-
-            if not wait_for_action_press("👉 Press Action Button again to start scan and line-follow."):
-                break
+            if not affirmation_heard:
+                speak("Please get today's affirmation before starting the engines!")
+                continue
 
             stop_run_requested.clear()
             global_running = True
+            autonomous_active = True
             first_capture_done = threading.Event()
             last_detection_time = time.time()
 
-            print("\n🤖 RoverPi Autonomous Mode Starting...")
+            print("\nRoverPi Autonomous Mode Starting...")
             cam_thread = threading.Thread(target=background_camera_loop, daemon=True)
             cam_thread.start()
 
             set_motors(0, 0)
-            print("⏳ Waiting for first startup image before movement...")
+            # Do NOT reset autonomous_active here; keep it True through result handling
+            print("Waiting for first startup image before movement...")
             if first_capture_done.wait(timeout=FIRST_CAPTURE_WAIT_TIMEOUT):
-                print("✅ First startup image captured. Beginning movement logic.")
+                print("First startup image captured. Beginning movement logic.")
             else:
-                print("⚠️ First capture wait timed out. Proceeding to avoid deadlock.")
+                print("Warning: First capture wait timed out. Proceeding to avoid deadlock.")
 
             while global_running and system_awake.is_set() and not stop_run_requested.is_set() and not shutdown_requested.is_set():
                 try:
                     arrows = hl.arrows()
                 except Exception as e:
-                    print(f"⚠️ HuskyLens glitch: {e}. Soft reconnecting...")
+                    print(f"Warning: HuskyLens glitch: {e}. Soft reconnecting...")
                     set_motors(0, 0)
                     time.sleep(0.5)
                     try:
@@ -1015,23 +1057,23 @@ try:
                         break
 
                 if robot_state == 4:
-                    set_motors(autoHardRev, autoHardPush)
+                    set_motors(auto_hard_rev, auto_hard_push)
                     heading += 0.0075
                 elif robot_state == 5:
-                    set_motors(autoHardPush, autoHardRev)
+                    set_motors(auto_hard_push, auto_hard_rev)
                     heading -= 0.0075
                 elif robot_state == 2:
-                    set_motors(autoSoftInner, autoSoftOuter)
+                    set_motors(auto_soft_inner, auto_soft_outer)
                     heading += 0.002
                     pos_x += math.cos(heading) * 0.8
                     pos_y += math.sin(heading) * 0.8
                 elif robot_state == 3:
-                    set_motors(autoSoftOuter, autoSoftInner)
+                    set_motors(auto_soft_outer, auto_soft_inner)
                     heading -= 0.002
                     pos_x += math.cos(heading) * 0.8
                     pos_y += math.sin(heading) * 0.8
                 elif robot_state == 1:
-                    set_motors(autoBaseSpeed, autoBaseSpeed)
+                    set_motors(auto_base_speed, auto_base_speed)
                     pos_x += math.cos(heading) * 1.0
                     pos_y += math.sin(heading) * 1.0
                 else:
@@ -1039,12 +1081,15 @@ try:
 
             set_motors(0, 0)
 
+
             if not system_awake.is_set() or stop_run_requested.is_set() or shutdown_requested.is_set():
+                autonomous_active = False
                 continue
+
 
             detected_text = process_mission_results()
             if detected_text:
-                print(f"\n👀 [DEBUG] The AI read your floor as: '{detected_text}'\n")
+                print(f"\n[DEBUG] The OCR read your floor as: '{detected_text}'\n")
                 judgment = evaluate_affirmation(current_affirmation, detected_text)
                 if judgment == "PASS":
                     mission_completed = True
@@ -1055,11 +1100,16 @@ try:
                         speak("Great! Now you are ready to seize the day.")
                     system_awake.clear()
                     stop_beeping()
+                    autonomous_active = False
                     break
 
+                stop_beeping()
                 speak(f"That's not quite today's affirmation. Try again if you want to keep your {current_streak} day streak!")
+                autonomous_active = False
             else:
+                stop_beeping()
                 speak("I couldn't read your writing. Let's try again.")
+                autonomous_active = False
 
 except KeyboardInterrupt:
     global_running = False
