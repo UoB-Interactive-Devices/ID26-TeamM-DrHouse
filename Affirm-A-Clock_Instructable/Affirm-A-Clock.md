@@ -60,18 +60,20 @@ For the data and PWM signals to function, the Raspberry Pi must share a **Common
 | :--- | :--- | :--- | :--- |
 | **ESC (Drone Motor)** | Pin 12 | GPIO 18 | Hardware PWM Signal (50Hz) |
 | **ESC Ground** | Pin 14 | GND | Signal Ground |
-| **L298N ENA** | Pin 32 | GPIO 12 | Right Motor PWM Speed |
-| **L298N IN1** | Pin 33 | GPIO 13 | Right Motor Direction A |
-| **L298N IN2** | Pin 22 | GPIO 25 | Right Motor Direction B |
-| **L298N ENB** | Pin 37 | GPIO 26 | Left Motor PWM Speed |
-| **L298N IN3** | Pin 13 | GPIO 27 | Left Motor Direction A |
-| **L298N IN4** | Pin 8 | GPIO 14 | Left Motor Direction B |
+| **HW-095 ENA** | Pin 32 | GPIO 12 | Right Motor PWM Speed |
+| **HW-095 IN1** | Pin 33 | GPIO 13 | Right Motor Direction A |
+| **HW-095 IN2** | Pin 22 | GPIO 25 | Right Motor Direction B |
+| **HW-095 ENB** | Pin 37 | GPIO 26 | Left Motor PWM Speed |
+| **HW-095 IN3** | Pin 13 | GPIO 27 | Left Motor Direction A |
+| **HW-095 IN4** | Pin 8 | GPIO 14 | Left Motor Direction B |
 | **HuskyLens SDA** | Pin 3 | GPIO 2 | I2C Data Line |
 | **HuskyLens SCL** | Pin 5 | GPIO 3 | I2C Clock Line |
 | **Button 1 Terminal A** | Pin 39 | GND | Button 1 Ground |
 | **Button 1 Terminal B** | Pin 29 | GPIO 5 | Button 1 Signal Input |
 | **Button 2 Terminal A** | Pin 31 | GPIO 6 | Button 2 Signal Input |
 | **Button 2 Terminal B** | Pin 30 | GND | Button 2 Ground |
+
+If you want to use the drone motor, ensure you use an ESC, and then connect the motor input signal to the Pi's pin 12, and add the motor's ground connection to the common ground with the pi and HW-095
 
 
 
